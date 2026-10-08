@@ -25,7 +25,43 @@ interface GitHubRawRelease {
 
 let cachedRelease: GitHubReleaseResponse | null = null;
 let cacheExpiry = 0;
-const CACHE_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+const CACHE_DURATION_MS = 6 * 60 * 60 * 1000; // 6 hours
+const ERROR_CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour
+
+function getGitHubHeaders(): Record<string, string> {
+  let token = process.env.GITHUB_TOKEN?.trim() || '';
+  const tokenFile = process.env.GITHUB_TOKEN_FILE?.trim();
+
+  if (!token && tokenFile) {
+    try {
+      token = fs.readFileSync(tokenFile, 'utf8').trim();
+    } catch (error) {
+      log(
+        'warn',
+        'Failed to read GitHub token file; release check will use anonymous access:',
+        error
+      );
+    }
+  }
+
+  return {
+    'User-Agent': 'SparkyFitness-App',
+    Accept: 'application/vnd.github+json',
+    ...(token ? { Authorization: 'Bearer ' + token } : {}),
+  };
+}
+
+function buildLocalVersionFallback(
+  currentVersion: string
+): GitHubReleaseResponse {
+  return {
+    version: `v${currentVersion}`,
+    releaseNotes: '',
+    publishedAt: new Date().toISOString(),
+    htmlUrl: '',
+    isNewVersionAvailable: false,
+  };
+}
 
 // Helper function to check if the latest version is newer than the current version
 function isVersionNewer(latest: string, current: string): boolean {
@@ -47,9 +83,7 @@ function isVersionNewer(latest: string, current: string): boolean {
 function fetchDirect(url: string): Promise<GitHubRawRelease> {
   return new Promise((resolve, reject) => {
     const options = {
-      headers: {
-        'User-Agent': 'SparkyFitness-App',
-      },
+      headers: getGitHubHeaders(),
       timeout: 8000,
     };
     const req = https.get(url, options, (res) => {
@@ -111,19 +145,15 @@ async function getLatestGitHubRelease(
     'https://api.github.com/repos/CodeWithCJ/SparkyFitness/releases/latest';
 
   let latestRelease: GitHubRawRelease | null = null;
-  let fetchError: Error | null = null;
 
   try {
     // 1. Try Axios first (uses outbound proxy if configured)
     const response = await axios.get(repoUrl, {
       timeout: 8000, // 8 seconds timeout
-      headers: {
-        'User-Agent': 'SparkyFitness-App',
-      },
+      headers: getGitHubHeaders(),
     });
     latestRelease = response.data as GitHubRawRelease;
   } catch (error) {
-    fetchError = error instanceof Error ? error : new Error(String(error));
     log(
       'warn',
       'Failed to fetch latest GitHub release via proxy Axios, attempting direct fallback...',
@@ -149,8 +179,10 @@ async function getLatestGitHubRelease(
         'Failed direct fallback fetch for GitHub release:',
         actualError
       );
-      // Throw the original Axios error to be handled by the outer catch
-      throw fetchError || actualError;
+      const fallback = buildLocalVersionFallback(currentVersion);
+      cachedRelease = fallback;
+      cacheExpiry = now + ERROR_CACHE_DURATION_MS;
+      return fallback;
     }
   }
 
@@ -182,13 +214,10 @@ async function getLatestGitHubRelease(
     );
 
     // Graceful fallback: assume no update is available so the app functions normally
-    return {
-      version: `v${currentVersion}`,
-      releaseNotes: '',
-      publishedAt: new Date().toISOString(),
-      htmlUrl: '',
-      isNewVersionAvailable: false,
-    };
+    const fallback = buildLocalVersionFallback(currentVersion);
+    cachedRelease = fallback;
+    cacheExpiry = now + ERROR_CACHE_DURATION_MS;
+    return fallback;
   }
 }
 
