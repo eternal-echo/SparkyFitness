@@ -38,6 +38,11 @@
     "translate": "Translate"
   },
   "chat": {
+    "reasoning": {
+      "thinking": "Thinking",
+      "complete": "Reasoning",
+      "duration": " ({{seconds}}s)"
+    },
     "toolCategories": {
       "tooltip": "Choose chatbot tools",
       "title": "Chatbot tools",

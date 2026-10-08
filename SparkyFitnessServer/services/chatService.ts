@@ -821,10 +821,22 @@ const RETENTION_24H_MODEL_PREFIXES = [
 export function buildChatProviderOptions(
   serviceType: string,
   userId: string,
-  modelName: string
+  modelName: string,
+  customUrl?: string | null
 ): Record<string, Record<string, JSONValue>> | undefined {
   if (serviceType === 'openai_compatible') {
     return { openai: { systemMessageMode: 'system' } };
+  }
+  // GLM-5.3 cannot disable thinking. Its Anthropic-compatible endpoint maps
+  // the Anthropic output_config.effort field to the model's reasoning effort.
+  // Keep the default at low for interactive health logging: it retains tool
+  // reasoning while avoiding a long visible chain-of-thought on simple turns.
+  if (
+    serviceType === 'anthropic' &&
+    customUrl?.trim() &&
+    /^glm-5\.3(?:-|$)/i.test(modelName)
+  ) {
+    return { anthropic: { effort: 'low' } };
   }
   if (serviceType !== 'openai') return undefined;
   const openai: Record<string, JSONValue> = {
@@ -1971,7 +1983,8 @@ async function processChatMessage(
         buildChatProviderOptions(
           aiService.service_type,
           authenticatedUserId,
-          modelName
+          modelName,
+          aiService.custom_url
         ),
         shouldSkipIntentLlmFallback(
           aiService.service_type,
@@ -2003,7 +2016,8 @@ async function processChatMessage(
     const chatProviderOptions = buildChatProviderOptions(
       aiService.service_type,
       authenticatedUserId,
-      modelName
+      modelName,
+      aiService.custom_url
     );
 
     const maxOutputTokens = resolveChatMaxOutputTokens(
@@ -2525,7 +2539,8 @@ async function processChatMessageStream(
         buildChatProviderOptions(
           aiService.service_type,
           authenticatedUserId,
-          modelName
+          modelName,
+          aiService.custom_url
         ),
         shouldSkipIntentLlmFallback(
           aiService.service_type,
@@ -2558,7 +2573,8 @@ async function processChatMessageStream(
     const chatProviderOptions = buildChatProviderOptions(
       aiService.service_type,
       authenticatedUserId,
-      modelName
+      modelName,
+      aiService.custom_url
     );
 
     const maxOutputTokens = resolveChatMaxOutputTokens(

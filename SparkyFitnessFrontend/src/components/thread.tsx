@@ -4,7 +4,7 @@ import {
   UserMessageAttachments,
 } from '@/components/attachment';
 import { MarkdownText } from '@/components/markdown-text';
-import { Reasoning } from '@/components/reasoning';
+import { Reasoning, ReasoningGroup } from '@/components/reasoning';
 import { ASK_USER_TOOL_NAME } from '@workspace/shared';
 import { AskUserToolUI } from '@/components/ai/AskUserToolUI';
 import { FoodPhotoEstimateToolUI } from '@/components/ai/FoodPhotoEstimateToolUI';
@@ -341,6 +341,7 @@ const AssistantMessage: FC = () => {
           components={{
             Text: MarkdownText,
             Reasoning: Reasoning,
+            ReasoningGroup: ReasoningGroup,
             tools: {
               by_name: {
                 [ASK_USER_TOOL_NAME]: AskUserToolUI,

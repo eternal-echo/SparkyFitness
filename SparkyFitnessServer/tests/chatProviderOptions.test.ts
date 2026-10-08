@@ -1,3 +1,4 @@
+import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import { generateText, streamText } from 'ai';
 import { vi, describe, expect, it } from 'vitest';
@@ -14,6 +15,10 @@ vi.mock('../config/logging', () => ({
 interface RecordedOpenAiRequest {
   messages?: Array<{ role?: string; content?: unknown }>;
   stream?: boolean;
+}
+
+interface RecordedAnthropicRequest {
+  output_config?: { effort?: string };
 }
 
 function createRecordingFetch(requests: RecordedOpenAiRequest[]): typeof fetch {
@@ -123,6 +128,31 @@ describe('buildChatProviderOptions', () => {
     });
   });
 
+  it('uses low reasoning effort for GLM-5.3 on a custom Anthropic endpoint', () => {
+    expect(
+      buildChatProviderOptions(
+        'anthropic',
+        'user-1',
+        'glm-5.3-flash',
+        'https://open.bigmodel.cn/api/anthropic'
+      )
+    ).toEqual({ anthropic: { effort: 'low' } });
+  });
+
+  it('does not change canonical Anthropic or unrelated custom models', () => {
+    expect(
+      buildChatProviderOptions('anthropic', 'user-1', 'glm-5.3-flash')
+    ).toBeUndefined();
+    expect(
+      buildChatProviderOptions(
+        'anthropic',
+        'user-1',
+        'claude-sonnet-5',
+        'https://anthropic-proxy.test'
+      )
+    ).toBeUndefined();
+  });
+
   it('returns undefined for unrelated non-openai service types', () => {
     for (const serviceType of [
       'anthropic',
@@ -138,6 +168,45 @@ describe('buildChatProviderOptions', () => {
         serviceType
       ).toBeUndefined();
     }
+  });
+});
+
+describe('GLM Anthropic-compatible effort requests', () => {
+  it('serializes low effort as output_config.effort', async () => {
+    const requests: RecordedAnthropicRequest[] = [];
+    const model = createAnthropic({
+      apiKey: 'test-key',
+      baseURL: 'https://anthropic-compatible.test/v1',
+      fetch: async (_input, init) => {
+        requests.push(
+          JSON.parse(String(init?.body)) as RecordedAnthropicRequest
+        );
+        return Response.json({
+          id: 'msg-test',
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'ok' }],
+          model: 'glm-5.3-flash',
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        });
+      },
+    })('glm-5.3-flash');
+
+    await generateText({
+      model,
+      prompt: 'Hello',
+      providerOptions: buildChatProviderOptions(
+        'anthropic',
+        'user-1',
+        'glm-5.3-flash',
+        'https://anthropic-compatible.test'
+      ),
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].output_config).toEqual({ effort: 'low' });
   });
 });
 

@@ -16,6 +16,7 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
 
 const ANIMATION_DURATION = 200;
 
@@ -125,7 +126,13 @@ function ReasoningTrigger({
   active?: boolean;
   duration?: number;
 }) {
-  const durationText = duration ? ` (${duration}s)` : '';
+  const { t } = useTranslation();
+  const label = active
+    ? t('chat.reasoning.thinking')
+    : t('chat.reasoning.complete');
+  const durationText = duration
+    ? t('chat.reasoning.duration', { seconds: duration })
+    : '';
 
   return (
     <CollapsibleTrigger
@@ -144,14 +151,18 @@ function ReasoningTrigger({
         data-slot="reasoning-trigger-label"
         className="aui-reasoning-trigger-label-wrapper relative inline-block leading-none"
       >
-        <span>Reasoning{durationText}</span>
+        <span>
+          {label}
+          {durationText}
+        </span>
         {active ? (
           <span
             aria-hidden
             data-slot="reasoning-trigger-shimmer"
             className="aui-reasoning-trigger-shimmer shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
           >
-            Reasoning{durationText}
+            {label}
+            {durationText}
           </span>
         ) : null}
       </span>
@@ -234,7 +245,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
   });
 
   return (
-    <ReasoningRoot defaultOpen={isReasoningStreaming}>
+    <ReasoningRoot defaultOpen={false}>
       <ReasoningTrigger active={isReasoningStreaming} />
       <ReasoningContent aria-busy={isReasoningStreaming}>
         <ReasoningText>{children}</ReasoningText>
