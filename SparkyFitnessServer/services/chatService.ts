@@ -1260,7 +1260,16 @@ function createChatModelInstance(
     return createOpenAI({ apiKey })(modelName);
   }
   if (aiService.service_type === 'anthropic') {
-    return createAnthropic({ apiKey })(modelName);
+    return createAnthropic({
+      apiKey,
+      ...(aiService.custom_url
+        ? {
+            baseURL:
+              aiService.custom_url.replace(/\/$/, '').replace(/\/v1$/, '') +
+              '/v1',
+          }
+        : {}),
+    })(modelName);
   }
   if (aiService.service_type === 'google') {
     return createGoogleGenerativeAI({ apiKey })(modelName);

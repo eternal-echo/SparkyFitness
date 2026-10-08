@@ -605,7 +605,10 @@ function buildAnthropicRequest(ctx: BuildContext): BuiltRequest {
     body.tool_choice = { type: 'tool', name: ctx.toolName };
   }
   return {
-    url: 'https://api.anthropic.com/v1/messages',
+    url: ctx.provider.custom_url
+      ? ctx.provider.custom_url.replace(/\/$/, '').replace(/\/v1$/, '') +
+        '/v1/messages'
+      : 'https://api.anthropic.com/v1/messages',
     headers: {
       'Content-Type': 'application/json',
       'anthropic-version': ANTHROPIC_VERSION,
@@ -1074,7 +1077,11 @@ async function performOllama(
 
 function resolveTimeout(req: DispatchRequest, family: ProviderFamily): number {
   if (typeof req.timeoutMs === 'number') return req.timeoutMs;
-  if (family === 'ollama' || requiresCustomUrl(req.provider.service_type)) {
+  if (
+    family === 'ollama' ||
+    requiresCustomUrl(req.provider.service_type) ||
+    (family === 'anthropic' && Boolean(req.provider.custom_url))
+  ) {
     return LOCAL_MODEL_TIMEOUT_MS;
   }
   return DEFAULT_TIMEOUT_MS;
