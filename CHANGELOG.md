@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.1](https://github.com/CodeWithCJ/SparkyFitness/compare/v1.8.0...v1.8.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **mobile:** align placeholders and plural forms in German locale ([9c224b1](https://github.com/CodeWithCJ/SparkyFitness/commit/9c224b11c8d8d229b6273ccee8ab37fe7846f6c8))
+* **mobile:** align placeholders and plural forms in German locale ([313a0ae](https://github.com/CodeWithCJ/SparkyFitness/commit/313a0aeaad8583527b0928716ffc8d38e197abee))
+
 ## [1.8.0](https://github.com/CodeWithCJ/SparkyFitness/compare/v1.7.3...v1.8.0) (2026-10-08)
 
 
