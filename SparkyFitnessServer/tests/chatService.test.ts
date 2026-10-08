@@ -6,6 +6,8 @@ import type { UIMessageChunk } from 'ai';
 import chatService, {
   mapUsageToMetadata,
   buildChatStopConditions,
+  resolveChatMaxOutputTokens,
+  resolveChatToolProfile,
 } from '../services/chatService.js';
 import { ASK_USER_TOOL_NAME } from '@workspace/shared';
 import chatRepository from '../models/chatRepository.js';
@@ -1080,6 +1082,35 @@ describe('chatService', () => {
     });
   });
 
+  describe('custom Anthropic chat runtime', () => {
+    it('honors the core profile on an Anthropic-compatible custom endpoint', () => {
+      expect(
+        resolveChatToolProfile(
+          'anthropic',
+          'https://open.bigmodel.cn/api/anthropic',
+          'core'
+        )
+      ).toBe('core');
+      expect(resolveChatToolProfile('anthropic', null, 'core')).toBe('full');
+    });
+
+    it('reserves extra output room for GLM-5.3 reasoning', () => {
+      expect(
+        resolveChatMaxOutputTokens(
+          'anthropic',
+          'https://open.bigmodel.cn/api/anthropic',
+          'glm-5.3-flash'
+        )
+      ).toBe(16_384);
+      expect(
+        resolveChatMaxOutputTokens('anthropic', null, 'claude-sonnet-5')
+      ).toBe(8192);
+      expect(
+        resolveChatMaxOutputTokens('openai', null, 'gpt-5.6-sol')
+      ).toBeUndefined();
+    });
+  });
+
   describe('processChatMessageStream (empty completion handling)', () => {
     const activeUserId = 'user-123';
     const actorUserId = 'actor-456';
@@ -1306,6 +1337,34 @@ describe('chatService', () => {
         {
           type: 'finish',
           finishReason: { unified: 'stop', raw: undefined },
+          usage,
+        },
+      ]);
+
+      const { stream } = await chatService.processChatMessageStream(
+        [{ role: 'user', content: 'Show my goal timeline' }],
+        'svc-1',
+        activeUserId,
+        actorUserId
+      );
+      const chunks = await drainStream(stream);
+
+      expect(chunks).toContainEqual({
+        type: 'error',
+        errorText:
+          'The AI service returned an empty response. Please try again.',
+      });
+    });
+
+    it('treats reasoning-only output as empty when the model hits its token limit', async () => {
+      streamModel([
+        { type: 'stream-start', warnings: [] },
+        { type: 'reasoning-start', id: 'r1' },
+        { type: 'reasoning-delta', id: 'r1', delta: 'Still thinking...' },
+        { type: 'reasoning-end', id: 'r1' },
+        {
+          type: 'finish',
+          finishReason: { unified: 'length', raw: 'max_tokens' },
           usage,
         },
       ]);

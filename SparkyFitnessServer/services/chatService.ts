@@ -127,6 +127,14 @@ const CORE_PROFILE_MAX_PROVIDER_RETRIES = 1;
 // with several tool round-trips can legitimately take minutes.
 const CHAT_REQUEST_TIMEOUT_MS = 5 * 60_000;
 
+// The AI SDK falls back to 4096 output tokens for model IDs it does not know.
+// That is too small for reasoning-first models: the reasoning can consume the
+// whole allowance before a text or tool result is emitted. Keep the same safe
+// Anthropic floor as providerDispatch, and give GLM-5.3 custom Anthropic
+// endpoints extra room because the model's thinking mode is always enabled.
+const ANTHROPIC_CHAT_MAX_OUTPUT_TOKENS = 8192;
+const GLM_53_CHAT_MAX_OUTPUT_TOKENS = 16_384;
+
 async function handleAiServiceSettings(
   action: string,
   serviceData: Partial<AiServiceSettings> & { api_key?: string },
@@ -507,6 +515,7 @@ export function buildEscalationPrepareStep(
 async function prepareChatContext(
   authenticatedUserId: string,
   serviceType: string,
+  customUrl: string | null | undefined,
   chatToolProfile?: string | null,
   toolCategories?: readonly string[],
   // True when toolCategories came from the user's explicit in-chat selector
@@ -540,18 +549,16 @@ async function prepareChatContext(
       };
     });
 
-  // Per-service chat tool profile. 'core' trims the tool surface for small/local
-  // models and is honored for every self-hosted service type (ollama,
-  // openai_compatible, custom) — the backends with weak models and no prompt
-  // cache, where the 35-tool block is the dominant per-turn token cost. Cloud
-  // provider types always get the full set, so a stale 'core' there can never
-  // trim it. The default stays 'full' everywhere: openai_compatible/custom can
-  // point at powerful endpoints, and silently dropping 15 tools would degrade
-  // answer quality for those users.
-  const toolProfile: ChatToolProfile =
-    requiresUserSuppliedAiUrl(serviceType) && chatToolProfile === 'core'
-      ? 'core'
-      : 'full';
+  // Per-service chat tool profile. A provider with an explicit custom URL is a
+  // custom endpoint even when it uses a native protocol adapter (for example,
+  // GLM through the Anthropic-compatible API). Honor its configured 'core'
+  // profile just like ollama/openai_compatible/custom; canonical cloud
+  // providers without a custom URL still stay on 'full'.
+  const toolProfile = resolveChatToolProfile(
+    serviceType,
+    customUrl,
+    chatToolProfile
+  );
 
   const selectedCategories = resolveCategories(toolProfile, toolCategories);
 
@@ -936,6 +943,59 @@ interface ChatAiServiceConfig {
   service_type: string;
   api_key?: string | null;
   custom_url?: string | null;
+}
+
+/**
+ * Resolve the effective tool profile for a provider endpoint.
+ *
+ * Native cloud adapters stay on the full profile unless they point at a custom
+ * endpoint. This distinction matters for Anthropic-compatible services: the
+ * adapter is native, but the endpoint/model characteristics are user supplied.
+ */
+export function resolveChatToolProfile(
+  serviceType: string,
+  customUrl: string | null | undefined,
+  configuredProfile: string | null | undefined
+): ChatToolProfile {
+  const usesCustomEndpoint =
+    requiresUserSuppliedAiUrl(serviceType) || Boolean(customUrl?.trim());
+  return usesCustomEndpoint && configuredProfile === 'core' ? 'core' : 'full';
+}
+
+/**
+ * Output-token budget used by the interactive chat paths.
+ *
+ * GLM-5.3 always reasons before answering and its custom model ID is unknown to
+ * the AI SDK, whose 4096-token fallback can end the turn before any visible
+ * text or tool call. Other Anthropic models use the same 8192-token floor as
+ * providerDispatch.ts.
+ */
+export function resolveChatMaxOutputTokens(
+  serviceType: string,
+  customUrl: string | null | undefined,
+  modelName: string
+): number | undefined {
+  if (serviceType !== 'anthropic') return undefined;
+  if (customUrl?.trim() && /^glm-5\.3(?:-|$)/i.test(modelName)) {
+    return GLM_53_CHAT_MAX_OUTPUT_TOKENS;
+  }
+  return ANTHROPIC_CHAT_MAX_OUTPUT_TOKENS;
+}
+
+// GLM-5.3's mandatory reasoning makes a second LLM call for intent routing a
+// poor fit: it regularly hits the classifier's 10-second guard before emitting
+// the tiny category answer. Keyword matches still narrow the tools; ambiguous
+// follow-ups fall back immediately to the configured profile's default set.
+function shouldSkipIntentLlmFallback(
+  serviceType: string,
+  customUrl: string | null | undefined,
+  modelName: string
+): boolean {
+  return (
+    serviceType === 'anthropic' &&
+    Boolean(customUrl?.trim()) &&
+    /^glm-5\.3(?:-|$)/i.test(modelName)
+  );
 }
 
 function extractTextFromAgentOutput(output: unknown): string | null {
@@ -1739,7 +1799,8 @@ async function classifyUserIntent(
   modelInstance: Parameters<typeof generateText>[0]['model'],
   serviceType: string,
   modelName: string,
-  providerOptions?: Record<string, Record<string, JSONValue>>
+  providerOptions?: Record<string, Record<string, JSONValue>>,
+  skipLlmFallback = false
 ): Promise<ChatToolCategorySlug[]> {
   const lastUserMessage = [...messages]
     .reverse()
@@ -1768,6 +1829,13 @@ async function classifyUserIntent(
       `[chatService] Keyword classifier matched: ${Array.from(matchedCategories).join(', ')}`
     );
     return Array.from(matchedCategories);
+  }
+
+  // Reasoning-only custom endpoints can spend longer classifying the request
+  // than answering it. The empty result deliberately selects the profile's
+  // normal default categories in prepareChatContext.
+  if (skipLlmFallback) {
+    return [];
   }
 
   // 2. LLM Fallback (if keyword classifier is unsure/empty)
@@ -1904,6 +1972,11 @@ async function processChatMessage(
           aiService.service_type,
           authenticatedUserId,
           modelName
+        ),
+        shouldSkipIntentLlmFallback(
+          aiService.service_type,
+          aiService.custom_url,
+          modelName
         )
       );
     }
@@ -1918,6 +1991,7 @@ async function processChatMessage(
     } = await prepareChatContext(
       authenticatedUserId,
       aiService.service_type,
+      aiService.custom_url,
       aiService.chat_tool_profile,
       activeCategories,
       categoriesAreManual,
@@ -1929,6 +2003,12 @@ async function processChatMessage(
     const chatProviderOptions = buildChatProviderOptions(
       aiService.service_type,
       authenticatedUserId,
+      modelName
+    );
+
+    const maxOutputTokens = resolveChatMaxOutputTokens(
+      aiService.service_type,
+      aiService.custom_url,
       modelName
     );
 
@@ -1960,6 +2040,7 @@ async function processChatMessage(
           activeTools: activeToolNames,
           prepareStep,
           providerOptions: chatProviderOptions,
+          ...(maxOutputTokens && { maxOutputTokens }),
           // Low temperature only for small local models (core profile); cloud and
           // full-profile Ollama keep provider defaults. Skipped entirely for
           // models that reject the parameter (see runWithTemperatureFallback).
@@ -2340,23 +2421,21 @@ const EMPTY_RESPONSE_ERROR_TEXT =
 // turn with finishReason 'error' and an empty completion instead of a thrown
 // error, so the stream closes cleanly and clients render nothing. Inject an
 // explicit error chunk so the UI surfaces a failure instead of staying silent.
+// Reasoning alone is not a usable completion: if the output budget is exhausted
+// before text or a tool call, the reasoning card otherwise looks stuck forever.
 function withEmptyCompletionGuard(
   stream: ReadableStream<UIMessageChunk>
 ): ReadableStream<UIMessageChunk> {
-  let sawContent = false;
+  let sawUsableContent = false;
   return stream.pipeThrough(
     new TransformStream<UIMessageChunk, UIMessageChunk>({
       transform(chunk, controller) {
-        if (
-          chunk.type === 'text-delta' ||
-          chunk.type === 'reasoning-delta' ||
-          chunk.type.startsWith('tool-')
-        ) {
-          sawContent = true;
+        if (chunk.type === 'text-delta' || chunk.type.startsWith('tool-')) {
+          sawUsableContent = true;
         }
         if (
           chunk.type === 'finish' &&
-          (chunk.finishReason === 'error' || !sawContent)
+          (chunk.finishReason === 'error' || !sawUsableContent)
         ) {
           controller.enqueue({
             type: 'error',
@@ -2447,6 +2526,11 @@ async function processChatMessageStream(
           aiService.service_type,
           authenticatedUserId,
           modelName
+        ),
+        shouldSkipIntentLlmFallback(
+          aiService.service_type,
+          aiService.custom_url,
+          modelName
         )
       );
     }
@@ -2462,6 +2546,7 @@ async function processChatMessageStream(
     } = await prepareChatContext(
       authenticatedUserId,
       aiService.service_type,
+      aiService.custom_url,
       aiService.chat_tool_profile,
       activeCategories,
       categoriesAreManual,
@@ -2473,6 +2558,12 @@ async function processChatMessageStream(
     const chatProviderOptions = buildChatProviderOptions(
       aiService.service_type,
       authenticatedUserId,
+      modelName
+    );
+
+    const maxOutputTokens = resolveChatMaxOutputTokens(
+      aiService.service_type,
+      aiService.custom_url,
       modelName
     );
 
@@ -2503,6 +2594,7 @@ async function processChatMessageStream(
       activeTools: activeToolNames,
       prepareStep,
       providerOptions: chatProviderOptions,
+      ...(maxOutputTokens && { maxOutputTokens }),
       // Low temperature only for small local models (core profile); cloud and
       // full-profile Ollama keep provider defaults, and models that reject the
       // parameter get none.
